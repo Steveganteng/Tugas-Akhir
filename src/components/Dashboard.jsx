@@ -1,0 +1,605 @@
+import { useEffect, useMemo, useState } from "react";
+import Sidebar from './Sidebar.jsx';
+import {
+  loadDashboardProgress,
+  resetDashboardProgress,
+  subscribeToRestockStore,
+  updateDashboardProgress,
+} from "../lib/restockStore";
+
+const WEEKLY_DATA = [
+  { week: "Minggu 1", demand: 1420, stock: 1180 },
+  { week: "Minggu 2", demand: 1540, stock: 1210 },
+  { week: "Minggu 3", demand: 1660, stock: 1240 },
+  { week: "Minggu 4", demand: 1590, stock: 1260 },
+];
+
+const DRUGS = [
+  { name: "Paracetamol 500mg", stock: 120, demand: 190 },
+  { name: "Amoxicillin 500mg", stock: 80, demand: 135 },
+  { name: "Cetirizine 10mg", stock: 66, demand: 104 },
+  { name: "ORS / Oralit", stock: 40, demand: 96 },
+  { name: "Ibuprofen 400mg", stock: 72, demand: 116 },
+  { name: "Vitamin C 50mg", stock: 55, demand: 88 },
+  { name: "Salbutamol 2mg", stock: 22, demand: 57 },
+];
+
+const URGENT_RESTOCK_THRESHOLD = 50;
+
+function buildRecommendations() {
+  return DRUGS.map((item) => {
+    const restockQty = Math.max(0, item.demand - item.stock);
+    return {
+      ...item,
+      restockQty,
+    };
+  })
+    .filter((item) => item.restockQty > 0)
+    .sort((a, b) => b.restockQty - a.restockQty);
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return "-";
+  }
+
+  return new Date(value).toLocaleString("id-ID", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+const pageStyle = {
+  minHeight: "100vh",
+  background: "#030712",
+  fontFamily: "'Segoe UI', system-ui, sans-serif",
+  color: "#e5e7eb",
+  display: "flex",
+  gap: "8px",
+};
+
+const maxChartValue = Math.max(
+  ...WEEKLY_DATA.flatMap((item) => [item.demand, item.stock])
+);
+
+const cardStyle = {
+  background: "#0d1117",
+  border: "1px solid #161b22",
+  borderRadius: "14px",
+  padding: "18px",
+  boxShadow: "0 8px 24px rgba(0, 0, 0, 0.25)",
+};
+
+export default function Dashboard() {
+  const recommendations = useMemo(() => buildRecommendations(), []);
+  const [restockStatus, setRestockStatus] = useState(() => loadDashboardProgress(recommendations));
+  const [restockDialog, setRestockDialog] = useState({
+    open: false,
+    type: "input",
+    item: null,
+    inputQty: "",
+    error: "",
+  });
+
+  const handleLogout = () => {
+    if (window.confirm('Anda yakin ingin logout')) {
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('username');
+      localStorage.removeItem('loginTime');
+      localStorage.removeItem('rememberMe');
+      window.location.href = '/login';
+    }
+  };
+
+  const processedRecommendations = useMemo(
+    () =>
+      recommendations.map((item) => ({
+        ...item,
+        fulfilledQty: restockStatus[item.name].fulfilledQty ?? 0,
+        confirmedAt: restockStatus[item.name].confirmedAt ?? null,
+        lastRestockAt: restockStatus[item.name].lastRestockAt ?? null,
+        remainingQty: Math.max(0, item.restockQty - (restockStatus[item.name].fulfilledQty ?? 0)),
+      })),
+    [recommendations, restockStatus]
+  );
+
+  useEffect(() => {
+    setRestockStatus(loadDashboardProgress(recommendations));
+
+    return subscribeToRestockStore(() => {
+      setRestockStatus(loadDashboardProgress(recommendations));
+    });
+  }, [recommendations]);
+
+  const pendingRecommendations = useMemo(
+    () => processedRecommendations.filter((item) => item.remainingQty > 0),
+    [processedRecommendations]
+  );
+
+  const restockedItems = useMemo(
+    () => processedRecommendations.filter((item) => item.fulfilledQty > 0),
+    [processedRecommendations]
+  );
+
+  const urgentItems = useMemo(
+    () => pendingRecommendations.filter((item) => item.remainingQty >= URGENT_RESTOCK_THRESHOLD),
+    [pendingRecommendations]
+  );
+
+  const totalRestock = useMemo(
+    () => pendingRecommendations.reduce((sum, item) => sum + item.remainingQty, 0),
+    [pendingRecommendations]
+  );
+
+  const handleRestockUpdate = (item) => {
+    if (item.remainingQty === 0) {
+      setRestockDialog({
+        open: true,
+        type: "reset",
+        item,
+        inputQty: "",
+        error: "",
+      });
+      return;
+    }
+
+    setRestockDialog({
+      open: true,
+      type: "input",
+      item,
+      inputQty: String(item.remainingQty),
+      error: "",
+    });
+  };
+
+  const closeRestockDialog = () => {
+    setRestockDialog({
+      open: false,
+      type: "input",
+      item: null,
+      inputQty: "",
+      error: "",
+    });
+  };
+
+  const submitRestockDialog = () => {
+    if (!restockDialog.item) {
+      closeRestockDialog();
+      return;
+    }
+
+    const item = restockDialog.item;
+
+    if (restockDialog.type === "reset") {
+      setRestockStatus(resetDashboardProgress({ itemName: item.name, targetRestok: item.restockQty }));
+      closeRestockDialog();
+      return;
+    }
+
+    const qty = Number(restockDialog.inputQty);
+    if (Number.isNaN(qty) || qty <= 0) {
+      setRestockDialog((prev) => ({
+        ...prev,
+        error: "Jumlah restok harus lebih besar dari 0.",
+      }));
+      return;
+    }
+
+    if (!Number.isInteger(qty)) {
+      setRestockDialog((prev) => ({
+        ...prev,
+        error: "Jumlah restok harus bilangan bulat.",
+      }));
+      return;
+    }
+
+    if (qty > item.remainingQty) {
+      setRestockDialog((prev) => ({
+        ...prev,
+        error: `Jumlah melebihi sisa kebutuhan (${item.remainingQty} unit).`,
+      }));
+      return;
+    }
+
+    const currentFulfilled = restockStatus[item.name].fulfilledQty ?? 0;
+    const updatedFulfilled = currentFulfilled + qty;
+    const now = new Date().toISOString();
+
+    setRestockStatus(
+      updateDashboardProgress({
+        itemName: item.name,
+        fulfilledQty: updatedFulfilled,
+        targetRestok: item.restockQty,
+      })
+    );
+
+    closeRestockDialog();
+  };
+
+  return (
+    <div style={pageStyle}>
+      <Sidebar />
+
+      <main style={{ flex: 1, padding: "clamp(24px, 2.5vw, 32px)", overflowY: "auto" }}>
+        <div style={{ width: "100%" }}>
+          <header style={{ marginBottom: 24 }}>
+            <h1 style={{ margin: 0, fontSize: "clamp(28px, 3.2vw, 38px)", fontWeight: 700, color: "#f9fafb" }}>Restok Obat</h1>
+        
+          </header>
+
+          <section
+            style={{
+              ...cardStyle,
+              marginBottom: 24,
+              borderColor: urgentItems.length > 0 ? "#7f1d1d" : "#14532d",
+              background: urgentItems.length > 0 ? "#2b1212" : "#052e16",
+              padding: 28,
+            }}
+          >
+            <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 14, color: urgentItems.length > 0 ? "#fecaca" : "#bbf7d0" }}>
+              {urgentItems.length > 0 ? "Alert: Obat yang harus segera direstok"
+                : "Status aman: Tidak ada obat di atas ambang prioritas tinggi"}
+            </div>
+
+            {urgentItems.length > 0 ? (
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                {urgentItems.map((item) => (
+                  <span
+                    key={item.name}
+                    style={{
+                      background: "#450a0a",
+                      border: "1px solid #991b1b",
+                      color: "#fecaca",
+                      borderRadius: 999,
+                      padding: "9px 14px",
+                      fontSize: 13,
+                      fontWeight: 800,
+                    }}
+                  >
+                    {item.name}: sisa {item.remainingQty} unit
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p style={{ margin: 0, fontSize: 14, color: "#86efac" }}>
+                Semua obat prioritas tinggi sudah dikonfirmasi restok atau berada di bawah ambang {URGENT_RESTOCK_THRESHOLD} unit.
+              </p>
+            )}
+          </section>
+
+        <section
+          style={{
+            ...cardStyle,
+            marginBottom: 24,
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+            alignItems: "start",
+            gap: 18,
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 13, color: "#6b7280", textTransform: "uppercase", letterSpacing: 1.2 }}>
+              Total Sisa Restok Yang Harus Dipenuhi
+            </div>
+            <div style={{ fontSize: 42, fontWeight: 800, color: "#4ade80", lineHeight: 1.2 }}>
+              {totalRestock} unit
+            </div>
+          </div>
+          <div
+            style={{
+              background: "#052e16",
+              color: "#86efac",
+              border: "1px solid #14532d",
+              borderRadius: 10,
+              padding: "8px 12px",
+              fontSize: 13,
+              fontWeight: 600,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {pendingRecommendations.length} obat masih memiliki sisa restok
+          </div>
+        </section>
+
+        <section style={{ ...cardStyle, marginBottom: 24 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <h2 style={{ margin: 0, fontSize: 20, color: "#f9fafb" }}>Rekomendasi Obat Yang Akan Direstok</h2>
+            <span style={{ color: "#6b7280", fontSize: 14 }}>Mendukung restok bertahap (contoh: kebutuhan 500, realisasi 250)</span>
+          </div>
+
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid #1f2937" }}>
+                  <th style={{ textAlign: "left", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Nama Obat</th>
+                  <th style={{ textAlign: "right", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Stok Saat Ini</th>
+                  <th style={{ textAlign: "right", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Kebutuhan</th>
+                  <th style={{ textAlign: "right", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Rekomendasi Restok</th>
+                  <th style={{ textAlign: "right", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Sudah Direstok</th>
+                  <th style={{ textAlign: "right", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Sisa</th>
+                  <th style={{ textAlign: "left", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Status</th>
+                  <th style={{ textAlign: "left", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Tanggal Update</th>
+                  <th style={{ textAlign: "left", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Aksi</th>
+                </tr>
+              </thead>
+              <tbody>
+                {processedRecommendations.map((item) => (
+                  <tr key={item.name} style={{ borderBottom: "1px solid #0f151e", opacity: item.remainingQty === 0 ? 0.75 : 1 }}>
+                    <td style={{ padding: "14px 12px", fontWeight: 600, color: "#e5e7eb", fontSize: 14 }}>{item.name}</td>
+                    <td style={{ padding: "14px 12px", textAlign: "right", color: "#9ca3af", fontSize: 14 }}>{item.stock}</td>
+                    <td style={{ padding: "14px 12px", textAlign: "right", color: "#9ca3af", fontSize: 14 }}>{item.demand}</td>
+                    <td style={{ padding: "14px 12px", textAlign: "right", fontWeight: 700, color: "#fbbf24", fontSize: 14 }}>
+                      {item.restockQty}
+                    </td>
+                    <td style={{ padding: "14px 12px", textAlign: "right", color: "#86efac", fontWeight: 700, fontSize: 14 }}>
+                      {item.fulfilledQty}
+                    </td>
+                    <td style={{ padding: "14px 12px", textAlign: "right", color: item.remainingQty > 0 ? "#fbbf24" : "#4ade80", fontWeight: 700, fontSize: 14 }}>
+                      {item.remainingQty}
+                    </td>
+                    <td style={{ padding: "14px 12px", color: item.remainingQty === 0 ? "#4ade80" : item.fulfilledQty > 0 ? "#facc15" : "#fbbf24", fontWeight: 700, fontSize: 14 }}>
+                      {item.remainingQty === 0 ? "Selesai" : item.fulfilledQty > 0 ? "Restok parsial" : "Belum direstok"}
+                    </td>
+                    <td style={{ padding: "14px 12px", color: "#9ca3af", fontSize: 13 }}>
+                      {formatDateTime(item.lastRestockAt)}
+                    </td>
+                    <td style={{ padding: "14px 12px" }}>
+                      <button
+                        type="button"
+                        onClick={() => handleRestockUpdate(item)}
+                        style={{
+                          border: "1px solid",
+                          borderColor: item.remainingQty === 0 ? "#14532d" : item.fulfilledQty > 0 ? "#0f766e" : "#92400e",
+                          background: item.remainingQty === 0 ? "#052e16" : item.fulfilledQty > 0 ? "#042f2e" : "#422006",
+                          color: item.remainingQty === 0 ? "#86efac" : item.fulfilledQty > 0 ? "#5eead4" : "#fcd34d",
+                          borderRadius: 8,
+                          padding: "9px 14px",
+                          fontSize: 13,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {item.remainingQty === 0 ? "Reset" : item.fulfilledQty > 0 ? "Tambah Restok" : "Input Restok"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section style={{ ...cardStyle, marginBottom: 24, overflowX: "auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <h2 style={{ margin: 0, fontSize: 20, color: "#f9fafb" }}>Detail Progres Restok Obat</h2>
+            <span style={{ color: "#6b7280", fontSize: 14 }}>{restockedItems.length} obat sudah diproses restok</span>
+          </div>
+
+          {restockedItems.length === 0 ? (
+            <p style={{ margin: 0, color: "#6b7280", fontSize: 13 }}>
+              Belum ada obat yang diproses restok.
+            </p>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid #1f2937" }}>
+                  <th style={{ textAlign: "left", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Nama Obat</th>
+                  <th style={{ textAlign: "right", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Stok Awal</th>
+                  <th style={{ textAlign: "right", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Kebutuhan</th>
+                  <th style={{ textAlign: "right", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Sudah Direstok</th>
+                  <th style={{ textAlign: "right", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Sisa</th>
+                  <th style={{ textAlign: "left", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Update Terakhir</th>
+                  <th style={{ textAlign: "left", padding: "14px 12px", fontSize: 13, color: "#6b7280" }}>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {restockedItems.map((item) => (
+                  <tr key={`done-${item.name}`} style={{ borderBottom: "1px solid #0f151e" }}>
+                    <td style={{ padding: "14px 12px", fontWeight: 600, color: "#e5e7eb", fontSize: 14 }}>{item.name}</td>
+                    <td style={{ padding: "14px 12px", textAlign: "right", color: "#9ca3af", fontSize: 14 }}>{item.stock}</td>
+                    <td style={{ padding: "14px 12px", textAlign: "right", color: "#9ca3af", fontSize: 14 }}>{item.demand}</td>
+                    <td style={{ padding: "14px 12px", textAlign: "right", color: "#4ade80", fontWeight: 700, fontSize: 14 }}>{item.fulfilledQty}</td>
+                    <td style={{ padding: "14px 12px", textAlign: "right", color: item.remainingQty > 0 ? "#fbbf24" : "#4ade80", fontWeight: 700, fontSize: 14 }}>{item.remainingQty}</td>
+                    <td style={{ padding: "14px 12px", color: "#9ca3af", fontSize: 13 }}>{formatDateTime(item.lastRestockAt)}</td>
+                    <td style={{ padding: "14px 12px", color: "#6b7280", fontSize: 13 }}>
+                      {item.remainingQty === 0 ? "Restok selesai 100%." : "Restok parsial, masih ada sisa yang harus dipenuhi."}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+
+        <section style={cardStyle}>
+          <div style={{ marginBottom: 18 }}>
+            <h2 style={{ margin: 0, fontSize: 20, color: "#f9fafb" }}>Grafik Kebutuhan Obat Perminggu</h2>
+            <p style={{ margin: "8px 0 0", color: "#6b7280", fontSize: 14 }}>
+              Perbandingan kebutuhan vs stok tersedia tiap minggu.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 16, alignItems: "flex-end", minHeight: 300, overflowX: "auto", paddingBottom: 8 }}>
+            {WEEKLY_DATA.map((item) => (
+              <div
+                key={item.week}
+                style={{
+                  flex: 1,
+                  minWidth: 110,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: 10,
+                }}
+              >
+                <div style={{ width: "100%", display: "flex", gap: 8, alignItems: "flex-end", height: 240 }}>
+                  <div
+                    title={`Kebutuhan: ${item.demand}`}
+                    style={{
+                      flex: 1,
+                      background: "#60a5fa",
+                      borderRadius: "8px 8px 0 0",
+                      height: `${(item.demand / maxChartValue) * 100}%`,
+                      minHeight: 8,
+                    }}
+                  />
+                  <div
+                    title={`Stok: ${item.stock}`}
+                    style={{
+                      flex: 1,
+                      background: "#22c55e",
+                      borderRadius: "8px 8px 0 0",
+                      height: `${(item.stock / maxChartValue) * 100}%`,
+                      minHeight: 8,
+                    }}
+                  />
+                </div>
+                <div style={{ fontSize: 14, color: "#9ca3af", fontWeight: 600 }}>{item.week}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 16, display: "flex", gap: 20, flexWrap: "wrap", fontSize: 13, color: "#4b5563" }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <span style={{ width: 12, height: 12, background: "#60a5fa", borderRadius: 2 }} /> Kebutuhan
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <span style={{ width: 12, height: 12, background: "#22c55e", borderRadius: 2 }} /> Stok
+            </span>
+          </div>
+        </section>
+        </div>
+      </main>
+
+      {restockDialog.open && (
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(3, 7, 18, 0.72)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1000,
+          padding: 16,
+        }}
+      >
+        <div
+          style={{
+            width: "min(800px, 100%)",
+            background: "linear-gradient(180deg, #0f172a 0%, #0b1220 100%)",
+            border: "1px solid #1e293b",
+            borderRadius: 16,
+            boxShadow: "0 24px 48px rgba(0, 0, 0, 0.45)",
+            padding: 32,
+          }}
+        >
+          {restockDialog.type === "reset" ? (
+            <>
+              <h3 style={{ margin: 0, fontSize: 28, color: "#f8fafc" }}>Reset Progres Restok</h3>
+              <p style={{ margin: "12px 0 18px", color: "#94a3b8", fontSize: 17, lineHeight: 1.5 }}>
+                Progres restok untuk <strong style={{ color: "#e2e8f0" }}>{restockDialog.item.name}</strong> akan dikosongkan kembali ke 0 unit.
+              </p>
+            </>
+          ) : (
+            <>
+              <h3 style={{ margin: 0, fontSize: 28, color: "#f8fafc" }}>Input Restok Aktual</h3>
+              <p style={{ margin: "12px 0 16px", color: "#94a3b8", fontSize: 17, lineHeight: 1.6 }}>
+                <strong style={{ color: "#e2e8f0" }}>{restockDialog.item.name}</strong>
+                <br />
+                Target restok: {restockDialog.item.restockQty ?? 0} unit
+                <br />
+                Sisa saat ini: {restockDialog.item.remainingQty ?? 0} unit
+              </p>
+
+              <label style={{ display: "grid", gap: 10, fontSize: 15, color: "#94a3b8" }}>
+                Jumlah yang direstok sekarang
+                <input
+                  type="number"
+                  min="1"
+                  max={restockDialog.item.remainingQty}
+                  value={restockDialog.inputQty}
+                  onChange={(event) =>
+                    setRestockDialog((prev) => ({
+                      ...prev,
+                      inputQty: event.target.value,
+                      error: "",
+                    }))
+                  }
+                  style={{
+                    background: "#0b1324",
+                    color: "#f8fafc",
+                    border: "1px solid #334155",
+                    borderRadius: 10,
+                    padding: "16px 16px",
+                    fontSize: 22,
+                    fontWeight: 700,
+                    outline: "none",
+                  }}
+                />
+              </label>
+
+              {restockDialog.error && (
+                <div
+                  style={{
+                    marginTop: 14,
+                    background: "#3f0f0f",
+                    border: "1px solid #7f1d1d",
+                    color: "#fca5a5",
+                    borderRadius: 8,
+                    padding: "11px 14px",
+                    fontSize: 15,
+                  }}
+                >
+                  {restockDialog.error}
+                </div>
+              )}
+            </>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 14, marginTop: 26 }}>
+            <button
+              type="button"
+              onClick={closeRestockDialog}
+              style={{
+                border: "1px solid #334155",
+                background: "#111827",
+                color: "#cbd5e1",
+                borderRadius: 10,
+                padding: "13px 22px",
+                fontSize: 15,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              Batal
+            </button>
+            <button
+              type="button"
+              onClick={submitRestockDialog}
+              style={{
+                border: "1px solid #0369a1",
+                background: "linear-gradient(135deg, #0ea5e9, #0284c7)",
+                color: "#f0f9ff",
+                borderRadius: 10,
+                padding: "13px 22px",
+                fontSize: 15,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              {restockDialog.type === "reset" ? "Reset Progres" : "Simpan Restok"}
+            </button>
+          </div>
+        </div>
+      </div>
+      )}
+    </div>
+  );
+}
+
+
+
+
+
+
