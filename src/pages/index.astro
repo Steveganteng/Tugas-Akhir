@@ -1,0 +1,77 @@
+---
+// Memanggil komponen React 
+import Dashboard from '../components/apoteker/Dashboard.jsx';
+---
+
+<!DOCTYPE html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Dashboard prediksi kebutuhan obat Klinik Del menggunakan model Hybrid SARIMA–Holt-Winters" />
+    <title>PrediksiRestockObat — Klinik Del</title>
+
+    <!-- Favicon sederhana berbasis emoji -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>" />
+
+    <style>
+      /* Reset & base */
+      *, *::before, *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html, body {
+        height: 100%;
+        background: linear-gradient(180deg, #f7fffe 0%, #f6fbff 50%, #ffffff 100%);
+        color: #0f172a;
+        font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+        overflow: auto;
+      }
+
+      /* Wrapper agar komponen React mengisi seluruh viewport */
+      #app-root {
+        width: 100%;
+        min-height: 100vh;
+        overflow-x: hidden;
+      }
+
+      /* Skeleton / loading state sebelum React mount */
+      .loading-screen {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        gap: 16px;
+        background: linear-gradient(180deg, #f7fffe 0%, #f6fbff 50%, #ffffff 100%);
+      }
+
+      .loading-screen .spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid #dbeafe;
+        border-top-color: #2f80ed;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+
+      .loading-screen p {
+        font-size: 13px;
+        color: #64748b;
+        letter-spacing: 1px;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="app-root">
+      <Dashboard client:load />
+    </div>
+  </body>
+</html>
